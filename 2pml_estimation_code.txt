@@ -1,0 +1,879 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Decentralized Decision Making in Retail Chains: Evidence from Inventory Management &
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Structural Estimation %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% July 2022 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Francis Guiton %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% Set-up
+clear; 
+tic
+
+cd '/Users/francisguiton/Dropbox/LCBO_other_files/LCBO_FILES'
+addpath '/Users/francisguiton/Dropbox/MATLAB'
+addpath '/Users/francisguiton/Dropbox/LCBO_other_files/LCBO_FILES/SYP/Second_Year_Paper'
+addpath '/Users/francisguiton/Dropbox/LCBO_Managers_Victor/LCBO_MANAGERS_PAPER'
+addpath '/Users/francisguiton/Dropbox/LCBO_Managers_Victor/LCBO_MANAGERS_PAPER/Version_June11'
+RawData = importdata('data_for_paper_version1_jun15.mat');
+Data_sorted = sortrows(RawData, [2 3 19 31 29]);
+Data_sorted(:,1) = [];
+Data_sorted = rmmissing(Data_sorted);
+store_vector_initial = table2array(unique(Data_sorted(:,1), 'rows'));
+product_vector_initial = table2array(unique(Data_sorted(:,2), 'rows')); 
+K = length(store_vector_initial);
+
+Data_sorted.realized_stockout = (Data_sorted{:,'units_sold'}>=Data_sorted{:,'stock_morning'});
+
+parameter_vector = cell(K,1);
+sigma_epsilon = cell(K,1);
+se_vector = cell(K,1);
+CCP = cell(K,1);
+t_stat = cell(K,1);
+ratios = cell(K,1);
+
+%% Starting algorithm
+
+for k = 1:1
+try
+
+% Setting the grid spaces for inventory level and order size 
+% Note: inventory level and order size expressed in hundreds of units
+
+max_inv = 1;
+max_order = 0.48;
+
+step_inv = 0.02;
+step_order = 0.06;
+
+% Dropping store-products that have too few observations for parameter identification
+
+for j = 1:5
+
+    check_data = Data_sorted(Data_sorted{:, 'store'} == store_vector_initial(k,1) & Data_sorted{:, 'product'} == product_vector_initial(j,1), :);
+    T = height(check_data);
+    if T <= 50
+        Data_sorted(Data_sorted{:, 'store'} == store_vector_initial(k,1) & Data_sorted{:, 'product'} == product_vector_initial(j,1), :) = [];
+    end
+    
+end
+
+Sorted_Data = Data_sorted(Data_sorted{:, 'store'} == store_vector_initial(k,1), :);
+store_vector = table2array(unique(Sorted_Data(:,1), 'rows'));
+product_vector = table2array(unique(Sorted_Data(:,2), 'rows'));
+
+Sorted_Data{:,'stock_morning'} = Sorted_Data{:,'stock_morning'}./100; 
+Sorted_Data{:,'deliveries'} = Sorted_Data{:,'deliveries'}./100; 
+Sorted_Data{:,'units_sold'} = Sorted_Data{:,'units_sold'}./100; 
+
+%% Defining store-product pairs
+
+I = length(store_vector);
+J = length(product_vector);
+sample = cell(I,J);
+
+for i = 1:I
+    for j = 1:J
+        sample{i,j} = Sorted_Data(Sorted_Data{:, 'product'} == product_vector(j,1), :);
+    end
+end
+            
+%% Constructing state space
+
+% Setting random number generator seed for k-means clustering
+rng(1);
+
+        price = cell(I,J); 
+        Q = cell(I,J);
+        inventory = cell(I,J);
+        orders = cell(I,J);
+        
+        distinct_Q = cell(I,J);
+        distinct_price = cell(I,J);
+        distinct_inventory = cell(I,J);
+        distinct_orders = cell(I,J);
+ 
+        demand_space = cell(I,J);
+        order_space = cell(I,J);
+        inventory_space = cell(I,J);
+        price_space = cell(I,J);
+        Q_space = cell(I,J);
+        weekend_space = cell(I,J);
+        holiday_space = cell(I,J);
+ 
+        for i = 1:I
+            for j = 1:J
+                
+        Q{i,j} = sample{i,j}{:, 'lag_weeksales'};
+        distinct_Q{i,j} = unique(Q{i,j}(:,1), 'rows');
+        price{i,j} = sample{i,j}{:, 'rprice'};
+        distinct_price{i,j} = unique(price{i,j}(:,1), 'rows');
+        inventory{i,j} = sample{i,j}{:, 'stock_morning'};
+        distinct_inventory{i,j} = unique(inventory{i,j}(:,1), 'rows');
+        orders{i,j} = sample{i,j}{:, 'deliveries'};
+        distinct_orders{i,j} = unique(orders{i,j}(:,1), 'rows');        
+        
+        store_count = i;
+        product_count = j;
+        
+            end
+        end
+   
+      
+% Setting number of clusters
+        
+        clust = 2;
+        
+        Q_data = cell(I,J);
+        price_data = cell(I,J);
+        inventory_data = cell(I,J);
+        order_data = cell(I,J);
+
+% Clustering state variables lnQ and p 
+        
+for i = 1:I
+    for j = 1:J
+         M = size(Q{i,j}, 1);
+         if size(distinct_Q{i,j},1) > clust
+            [Q_index, Q_spac] = kmeans(Q{i,j}, clust);
+            for m = 1:M
+                Q_data{i,j}(m,1) = round(Q_spac(Q_index(m,1), 1),2);    
+            end
+         else
+            Q_spac = distinct_Q{i,j}(:,1);
+            Q_data{i,j}(:,1) = Q{i,j}(:,1);
+         end
+        Q_space{i,j} = round(Q_spac,2);
+    store_count = i;    
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+         M = size(price{i,j}, 1);
+         if size(distinct_price{i,j},1) > clust
+            [price_index, price_spac] = kmeans(price{i,j}, clust);
+            for m = 1:M
+                price_data{i,j}(m,1) = price_spac(price_index(m,1), 1);    
+            end
+         else
+            price_spac = distinct_price{i,j}(:,1);
+            price_data{i,j}(:,1) = price{i,j}(:,1);
+         end
+        price_space{i,j} = price_spac;
+    store_count = i;    
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+        inventory_space{i,j} = [0:step_inv:max_inv]';
+        order_space{i,j} = [0:step_order:max_order]';
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+        roundTarget1 = inventory_space{i,j}.';
+        roundTarget2 = order_space{i,j}.';
+        sample{i,j}{:,'stock_morning'} = interp1(roundTarget1, roundTarget1, sample{i,j}{:,'stock_morning'}, 'nearest', 'extrap');
+        sample{i,j}{:,'deliveries'} = interp1(roundTarget2, roundTarget2, sample{i,j}{:,'deliveries'}, 'nearest', 'extrap');
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+        sample{i,j}{:, 'lag_weeksales'} = Q_data{i,j};
+        sample{i,j}{:, 'rprice'} = price_data{i,j}; 
+    end
+end 
+   
+% Defining demand space, and seasonal dummies space
+
+for i = 1:I
+    for j = 1:J
+    demand_space{i,j} = unique(sample{i,j}{:, 'units_sold'});
+    store_count = i;
+    product_count = j;
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+        weekend_space{i,j} = unique(sample{i,j}{:, 'weekend'});
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+        holiday_space{i,j} = unique(sample{i,j}{:, 'holiday'});
+    end
+end
+
+
+% Creating state space matrix
+
+state_space = cell(I,J);
+
+for i = 1:I
+for j = 1:J
+
+ elements = {inventory_space{i,j}.', price_space{1,j}.', Q_space{i,j}.', weekend_space{i,j}.', holiday_space{i,j}.'}; 
+ combinations = cell(1, numel(elements));
+ [combinations{:}] = ndgrid(elements{:});
+ combinations = cellfun(@(x) x(:), combinations,'uniformoutput',false);
+ state_space{i,j} = [combinations{:}];
+
+product_count = j;
+
+end
+end
+
+% Computing variables log-mu and log-sigma2 as a function of the state variables
+
+log_mu = cell(I,J);
+log_sigma2 = cell(I,J);
+p = cell(I,J);
+r = cell(I,J);
+params = cell(I,J);
+
+for i = 1:I
+    for j = 1:J
+        S = length(state_space{i,j});
+        log_mu{i,j}(:,1) = sample{i,j}{1,'constant_beta'} + sample{i,j}{1,'Q_beta'}.*state_space{i,j}(:,3) + sample{i,j}{1,'price_beta'}.*log(state_space{i,j}(:,2)) + sample{i,j}{1,'weekend_beta'}.*state_space{i,j}(:,4) + sample{i,j}{1,'holiday_beta'}.*state_space{i,j}(:,5);
+        log_mu{i,j} = exp(log_mu{i,j});
+        log_sigma2{i,j}(:,1) = log_mu{i,j}(:,1).*(ones(S,1)+log_mu{i,j}(:,1)*sample{i,j}{1,'alpha'});
+        p{i,j}(:,1) = log_mu{i,j}(:,1)./log_sigma2{i,j}(:,1);        
+        r{i,j}(:,1) = (log_mu{i,j}(:,1).^2)./(log_sigma2{i,j}(:,1) - log_mu{i,j}(:,1));
+    end
+end
+
+%% Creating state variable transition matrices
+
+% Price
+
+mdl=arima(1,0,0);
+price_ar = cell(I,J);
+
+for i = 1:I
+    for j = 1:J
+
+    price_est = estimate(mdl,sample{i,j}{:,'rprice'}, 'Display', 'off'); 
+    price_ar{i,j} = cell2mat(price_est.AR);
+    
+    end
+end
+
+price_matrix = cell(I,J);
+for i = 1:I
+for j = 1:J
+    S = length(price_space{i,j});
+    for s = 1:S
+        for q = 1:S
+        if s == q
+            price_matrix{i,j}(s,q) = price_ar{i,j};
+        else
+            price_matrix{i,j}(s,q) = (1-price_ar{i,j})/(S-1);
+        end
+        end 
+    end
+    
+    product_count = j;
+end
+end
+
+price_transition = cell(I,J);
+
+for i = 1:I
+for j = 1:J
+    
+    S = length(state_space{i,j});
+    L = length(inventory_space{i,j});
+    H = length(price_space{i,j});
+    F = ones(L);
+    reps = S/(L*H);
+    inter_matrix = kron(price_matrix{i,j},F);
+    price_transition{i,j} = repmat(inter_matrix, reps);
+    
+    product_count = j;
+    
+end
+end
+
+% lnQ
+
+mdl=arima(1,0,0);
+Q_ar = cell(I,J);
+
+for i = 1:I
+    for j = 1:J
+
+    Q_est = estimate(mdl,sample{i,j}{:,'lag_weeksales'}, 'Display', 'off'); 
+    Q_ar{i,j} = cell2mat(Q_est.AR);
+    
+    end
+end
+
+Q_matrix = cell(I,J);
+for i = 1:I
+for j = 1:J
+    S = length(Q_space{i,j});
+    for s = 1:S
+        for q = 1:S
+        if s == q
+            Q_matrix{i,j}(s,q) = Q_ar{i,j};
+        else
+            Q_matrix{i,j}(s,q) = (1-Q_ar{i,j})/(S-1);
+        end
+        end 
+    end
+    
+    product_count = j;
+end
+end
+
+Q_transition = cell(I,J);
+
+for i = 1:I
+for j = 1:J
+    
+    S = length(state_space{i,j});
+    L = length(inventory_space{i,j})*length(price_space{i,j})*length(Q_space{i,j});
+    H = length(inventory_space{i,j})*length(price_space{i,j});
+    F = ones(H);
+    reps = S/(L);
+    inter_matrix = kron(Q_matrix{i,j},F);
+    Q_transition{i,j} = repmat(inter_matrix, reps);
+    
+    product_count = j;
+    
+end
+end
+
+% Weekend dummy
+
+weekend_transition = cell(I,J);
+wk_inter = cell(I,J);
+wk_int_length = cell(I,J);
+lambda = 2/7;
+weekend_matrix = [(1-lambda) lambda; 1 0];
+
+for i = 1:I
+    for j = 1:J
+    S = length(state_space{i,j});
+    L = length(inventory_space{i,j})*length(price_space{i,j})*length(Q_space{i,j})*length(weekend_space{i,j});
+    H = length(inventory_space{i,j})*length(price_space{i,j})*length(Q_space{i,j});
+    F = ones(H);
+    reps = S/(L);
+    inter_matrix = kron(weekend_matrix,F);
+    weekend_transition{i,j} = repmat(inter_matrix, reps); 
+    end
+end
+
+% Holiday dummy
+
+holiday_transition = cell(I,J);
+hol_inter = cell(I,J);
+hol_int_length = cell(I,J);
+lambda = 4/365;
+holiday_matrix = [(1-lambda) lambda; 1 0];
+
+for i = 1:I
+    for j = 1:J
+    S = length(state_space{i,j});
+    L = length(inventory_space{i,j})*length(price_space{i,j})*length(Q_space{i,j})*length(weekend_space{i,j})*length(holiday_space{i,j});
+    H = length(inventory_space{i,j})*length(price_space{i,j})*length(Q_space{i,j})*length(weekend_space{i,j});
+    F = ones(H);
+    reps = S/(L);
+    inter_matrix = kron(holiday_matrix,F);
+    holiday_transition{i,j} = repmat(inter_matrix, reps); 
+    end
+end
+
+% Inventory level
+
+inventory_transition = cell(I,J);
+
+for i = 1:I
+for j = 1:J
+    S = length(state_space{i,j});
+    L = length(inventory_space{i,j});
+    X = length(order_space{i,j});
+    inventory_transition{i,j} = inventory_rule(i, j, state_space, r, p, order_space, inventory_space, S, L, X);
+end
+end
+
+%% Running the first-step nonparametric estimation of CCPs
+
+P = cell(I,J);
+
+myzero = 1e-6;
+              
+for i = 1:I  
+    for j = 1:J
+        X = length(order_space{i,j});
+        S = length(state_space{i,j});
+        P{i,j} = zeros(S,X);
+        P{i,j} = kernel(i, j, state_space, sample{i,j}, order_space);
+        P{i,j} = P{i,j}.*(P{i,j}>myzero).*(P{i,j}<(1-myzero)) + myzero.*(P{i,j}<=myzero) + (1-myzero).*(P{i,j}>=(1-myzero));
+    end
+end
+
+%% Computing terms in the value function that do not depend on gamma
+
+H_term = cell(I,J);
+transition_term = cell(I,J);
+h_tilde = cell(I,J);
+e_tilde = cell(I,J);
+term_1 = cell(I,J);
+term_2 = cell(I,J);
+term_3 = cell(I,J);
+sum_term_1 = cell(I,J);
+sum_term_2 = cell(I,J);
+sum_term_3 = cell(I,J);
+inv_term = cell(I,J);
+exp_min = cell(I,J);
+delta = 0.99986;
+
+for i = 1:I
+    for j = 1:J
+        try
+        S = length(state_space{i,j});
+        X = length(order_space{i,j});
+        euler_vec = zeros(S,1);
+        euler_vec(1:S,1) = double(eulergamma);
+        H_term{i,j} = zeros(S,5);
+        transition_term{i,j} = zeros(S,S,X);
+        ident = eye(S);
+        term_1{i,j} = zeros(S,S,X);
+        term_2{i,j} = zeros(S,5,X);
+        term_3{i,j} = zeros(S,X);
+        sum_term_1{i,j} = zeros(S,S);
+        sum_term_2{i,j} = zeros(S,5);
+        sum_term_3{i,j} = zeros(S,1);
+        
+        exp_min = expected_min(r{i,j}(:,1), p{i,j}(:,1), state_space{i,j}(:,1));
+
+        H_mat = H_func_1(i,j, state_space, r, p);
+        
+        for x = 1:X
+            H_term{i,j}(:,:,x) = H_func(order_space{i,j}(x,1), H_mat);
+            transition_term{i,j}(:,:,x) = delta_transition(i, j, x, inventory_transition, price_transition, Q_transition, weekend_transition, holiday_transition);
+            term_1{i,j}(:,:,x) = P{i,j}(:,x).*transition_term{i,j}(:,:,x);
+            term_2{i,j}(:,:,x) = P{i,j}(:,x).*H_term{i,j}(:,:,x);
+            term_3{i,j}(:,x) = (P{i,j}(:,x).*(euler_vec - log(P{i,j}(:,x))));
+        end
+        
+        sum_term_1{i,j} = sum(term_1{i,j}, 3);
+        sum_term_2{i,j} = sum(term_2{i,j}, 3);
+        sum_term_3{i,j} = sum(term_3{i,j}, 2);
+        inv_term{i,j} = inv(ident - (delta*sum_term_1{i,j}));
+        
+        product_count = j;
+        
+        catch
+            sample{i,j} = [];
+        end
+        
+    end
+end
+
+for i = 1:I
+    for j = 1:J
+        
+        try
+        S = length(state_space{i,j});
+        X = length(order_space{i,j});
+        h_tilde{i,j} = zeros(S,5,X);
+        e_tilde{i,j} = zeros(S,1,X);  
+        
+        for x = 1:X
+            h_tilde{i,j}(:,:,x) = H_term{i,j}(:,:,x) + delta*transition_term{i,j}(:,:,x)*inv_term{i,j}*sum_term_2{i,j};
+            e_tilde{i,j}(:,:,x) = delta*transition_term{i,j}(:,:,x)*inv_term{i,j}*sum_term_3{i,j};
+        end
+        
+        product_count = j;
+        
+        catch
+            h_tilde{i,j} = [];
+            e_tilde{i,j} = [];
+        end
+           
+    end
+end
+
+
+%% Defining the log-likelihood function and running a two-step pseudo maximum likelihood estimation
+
+gamma_estimates = zeros(J,5);
+    
+for i = 1:I
+for j = 1:J
+
+gamma_guess = [1 0 0 0 0];
+fonction = @(gamma) -loglike(sample, state_space, order_space, j, h_tilde{i,j}, e_tilde{i,j}, gamma(1), gamma(2), gamma(3), gamma(4), gamma(5));
+options = optimset('FunValCheck', 'on', 'MaxIter', 1000, 'MaxFunEvals', 1500, 'TolFun', 1.e-6);
+gamma_estimates(j,:) = fminsearchbnd(fonction, gamma_guess, [1 0 0 0 0], [1 Inf Inf Inf Inf], options);
+
+end
+end
+
+gamma_estimates_cleaned = [product_vector gamma_estimates(:,(2:5))];
+gamma_estimates_cleaned( ~any(gamma_estimates_cleaned(:,(2:5)),2), : ) = [];
+gamma_estimates_cleaned(:,[2,5]) = gamma_estimates_cleaned(:,[2,5])./100;
+gamma_dollars = gamma_estimates./gamma_estimates(:,1);
+parameter_vector{k} = gamma_estimates_cleaned;
+
+
+%% Obtaining the bootstrap standard errors
+
+standard_errors  = zeros(J,4);
+
+for i = 1:I
+for j = 1:J
+    
+    % Size of bootstrap sample
+    n = height(sample{i,j});
+
+    % Number of bootstrap samples
+    B = 25;
+
+    % Output matrix
+    gamma_bootstrap = boot(n, B, sample, state_space, demand_space, inventory_space, order_space, price_transition, inventory_transition, j, h_tilde, e_tilde);
+    gamma_bootstrap(:,[1,4]) = gamma_bootstrap(:,[1,4])./100;
+    bootstrap_variance = var(gamma_bootstrap);
+    standard_errors(j,:) = sqrt(bootstrap_variance);
+
+end
+end
+
+standard_errors = [product_vector standard_errors];
+standard_errors( ~any(standard_errors(:,(2:5)),2), : ) = [];
+se_vector{k} = standard_errors;
+
+%% Computing t-statistics
+
+t_stat{k} = parameter_vector{k}(:,(2:5))./se_vector{k}(:,(2:5));
+
+%% Computing the equilibrium conditional choice probabilities
+
+gamma_estimates_ccp  = gamma_estimates;
+J = size(gamma_estimates,1);
+choice_probabilities = cell(I,J);
+
+for i = 1:I
+    for j = 1:J
+
+        try
+        gamma = [gamma_estimates_ccp(j,:)]';
+        S = length(state_space{i,j});
+        X = length(order_space{i,j});
+        choice_probabilities{i,j} = zeros(S,X);
+        H_til = cell(X,1);
+            for x = 1:X
+                H_til{x,1} = h_tilde{i,j}(:,:,x)*gamma + e_tilde{i,j}(:,:,x);
+            end
+            for x = 1:X
+                order_state = ones(S,1);
+                order_state = order_space{i,j}(x,1).*order_state;
+                choice_probabilities{i,j}(:,x) = H_tilde(i,j,order_state, state_space{i,j}, state_space, H_til, order_space);
+            end
+        catch
+            choice_probabilities{i,j} = [];
+        end
+
+    end
+end
+        
+for j = 1:J
+
+    if gamma_estimates(j,(2:5)) == [0 0 0 0]
+        choice_probabilities{i,j} = [];
+    else
+        continue;
+    end
+
+end
+   
+CCP{k} = choice_probabilities;
+
+
+%% Computing realized profits, revenues, and costs over the sample period as a function of the estimated parameters
+
+for i = 1:I
+    for j = 1:J
+        
+        if gamma_estimates(j,:) == [1 0 0 0 0]
+            continue;
+        else
+        
+        sample{i,j}{:,'units_sold'} = sample{i,j}{:,'units_sold'}.*100;
+        sample{i,j}.Revenue = sample{i,j}{:,'rprice'}.*sample{i,j}{:,'units_sold'};
+        sample{i,j}.Holding_cost = gamma_estimates(j,2).*sample{i,j}{:,'stock_morning'};
+        sample{i,j}.Stockout_cost = gamma_estimates(j,3).*(sample{i,j}{:,'realized_stockout'}>0);
+        sample{i,j}.Fixed_cost = gamma_estimates(j,4).*(sample{i,j}{:,'deliveries'}>0);
+        sample{i,j}.Unit_cost = gamma_estimates(j,5).*sample{i,j}{:,'deliveries'};
+        sample{i,j}.Profits = sample{i,j}{:,'Revenue'}  - sample{i,j}{:,'Holding_cost'} - sample{i,j}{:,'Stockout_cost'} - sample{i,j}{:,'Fixed_cost'} - sample{i,j}{:,'Unit_cost'};
+        
+        end
+        
+    end
+end
+
+%% Computing the inventory ratios
+
+J = size(gamma_estimates,1);
+
+sum_revenue = cell(1,J);
+sum_holding = cell(1,J);
+sum_stockout = cell(1,J);
+sum_fixed = cell(1,J);
+sum_unit = cell(1,J);
+
+holding_to_revenue = cell(1,J);
+stockout_to_revenue = cell(1,J);
+fixed_to_revenue = cell(1,J);
+unit_to_revenue = cell(1,J);
+
+
+ratio_vector = zeros(J,4);
+
+for j = 1:J
+    
+    try
+    
+    sum_revenue{1,j} = sum(sample{1,j}.Revenue);
+    sum_holding{1,j} = sum(sample{1,j}.Holding_cost);
+    sum_stockout{1,j} = sum(sample{1,j}.Stockout_cost);
+    sum_fixed{1,j} = sum(sample{1,j}.Fixed_cost);
+    sum_unit{1,j} = sum(sample{1,j}.Unit_cost);
+    
+    holding_to_revenue{1,j} = (sum_holding{1,j}/sum_revenue{1,j})*100;
+    stockout_to_revenue{1,j} = (sum_stockout{1,j}/sum_revenue{1,j})*100;
+    fixed_to_revenue{1,j} = (sum_fixed{1,j}/sum_revenue{1,j})*100;
+    unit_to_revenue{1,j} = (sum_unit{1,j}/sum_revenue{1,j})*100;
+    
+    ratio_vector(j,:) = [holding_to_revenue{1,j}, stockout_to_revenue{1,j}, fixed_to_revenue{1,j}, unit_to_revenue{1,j}];
+    
+    catch
+        ratio_vector(j,:) = zeros(1,4);
+    end
+    
+end
+
+ratio_vector = [product_vector ratio_vector];
+ratio_vector( ~any(ratio_vector(:,(2:5)),2), : ) = [];
+ratios{k} = ratio_vector;
+
+catch
+    parameter_vector{k} = [];
+    se_vector{k} = [];
+    CCP{k} = [];
+    t_stat{k} = [];
+    ratios{k} = [];
+end
+
+toc
+
+iteration_count = k
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% Functions
+
+function F = expected_min(r, p, k)
+
+k(k==0) = 1e-6;
+pd = arrayfun(@(r,p) makedist('NegativeBinomial','R',r,'P',p), r(:,1), p(:,1));
+trunc = arrayfun(@(pd,k) truncate(pd,0,k), pd, k);
+d_mean = arrayfun(@(trunc) mean(trunc), trunc);
+k(k==1e-6) = 0;
+d_mean(d_mean<=1e-6) = 0;
+exp_dem = d_mean.*nbincdf(k,r,p) + k.*(1-nbincdf(k,r,p));
+
+F = exp_dem;
+end
+
+function F = expected_stock(r, p, k)
+
+CDF_term = (1-nbincdf(k, r, p));
+
+F = CDF_term;
+
+end
+
+function F = inventory_rule(i, j, state_space, r, p, order_space, inventory_space, S, L, X)
+Rep_times = S/L;
+inv_matrix = zeros(S,S,X);
+
+state = round(state_space{i,j}(:,1).*100);
+inventory = round(inventory_space{i,j}.*100);
+order = round(order_space{i,j}.*100);
+
+   for x = 1:X
+        inv_mat = zeros(S,L);
+        
+        inv_mat(:,:) = ((1-nbincdf(state, r{i,j}(:,1), p{i,j}(:,1)) + nbinpdf(state, r{i,j}(:,1), p{i,j}(:,1)))*(order(x,1) == inventory)') + ((nbinpdf(ones(S,L).*state + ones(S,L).*order(x,1) - ones(S,L).*(inventory)', ones(S,L).*r{i,j}(:,1) , ones(S,L).*p{i,j}(:,1))).*(order(x,1) < inventory)');
+        
+        term = sum(inv_mat,2);
+        inv_mat = inv_mat./term;
+        
+        inv_matrix(:,:,x) = repmat(inv_mat, 1, Rep_times);
+   end
+
+F = inv_matrix;
+        
+end
+
+
+function F = delta_transition(i, j, x, inventory_transition, price_transition,Q_transition, weekend_transition, holiday_transition)
+mat = inventory_transition{i,j}(:,:,x).*price_transition{i,j}.*Q_transition{i,j}.*weekend_transition{i,j}.*holiday_transition{i,j};
+F = mat;
+
+end
+
+function K = kern(x, y, n)
+distance = pdist2(x,y);
+K = 1./(1+sqrt(n).*distance);
+end
+
+function F = kernel(i, j, state_space, estimation_sample, order_space)
+X = size(order_space{i,j},1);
+S = size(state_space{i,j},1);
+state_data = [round(estimation_sample{:,'stock_morning'}.*100) estimation_sample{:,'rprice'} estimation_sample{:,'lag_weeksales'} estimation_sample{:,'weekend'} estimation_sample{:,'holiday'} round(estimation_sample{:,'deliveries'}.*100)];
+state_space{i,j}(:,1) = round(state_space{i,j}(:,1).*100);
+order_space{i,j} = round(order_space{i,j}.*100);
+T = height(state_data);
+denom_term = cell(X);
+num_term = cell(X);
+numerator = zeros(S,X);
+denominator = zeros(S,X);
+
+for x = 1:X
+    denom_term{x,1} = zeros(S,T);
+    num_term{x,1} = zeros(S,T);
+            denom_term{x,1}(:,:) = kern(state_space{i,j}(:,:), state_data(:,(1:5)), T);
+            num_term{x,1}(:,:) = (order_space{i,j}(x,1) == state_data(:,6))'.*kern(state_space{i,j}(:,:), state_data(:,(1:5)), T);
+numerator(:,x) = sum(num_term{x,1},2);
+denominator(:,x) = sum(denom_term{x,1},2);
+end
+
+F = numerator./denominator;
+
+end
+
+function F = H_func_1(i,j, state_space, r, p)
+    
+    h_function(:,1) = state_space{i,j}(:,2).*(expected_min(r{i,j}(:,1), p{i,j}(:,1), round(state_space{i,j}(:,1).*100))./100);
+    h_function(:,2) = -state_space{i,j}(:,1);
+    h_function(:,3) = -expected_stock(r{i,j}(:,1), p{i,j}(:,1), round(state_space{i,j}(:,1).*100));
+
+H_function = h_function;
+
+
+F = H_function;
+
+end
+
+function F = H_func(x,H_mat)
+
+    h_function(:,(1:3)) = H_mat;
+    h_function(:,4) = -(x>0);
+    h_function(:,5) = -x;
+
+H_function = h_function;
+
+F = H_function;
+
+end
+
+function F = H_tilde(i,j,x,s, state_space, H_til, order_space)
+ 
+T = length(s);
+max_term = zeros(T,1);
+
+[~, v] = ismember(x, order_space{i,j});
+[~, p] = ismember(s, state_space{i,j}, 'rows');
+H_mat = cellfun(@(v) v(p(:,1)), H_til, 'UniformOutput', false)';
+H_mat = [H_mat{:}];
+H_nums = H_til(v(:,1));
+inter_mat = cellfun(@(c,idx)c(idx,:), H_nums, num2cell(p), 'un', 0);
+inter_mat = [inter_mat{:}]';
+
+max_term(:,1) = max(H_mat,[],2);
+P_num = exp(inter_mat - max_term);
+P_denom = sum(exp(H_mat - max_term), 2);
+result = P_num./P_denom;
+ 
+F = result;
+ 
+end
+ 
+function F = loglike(estimation_sample, state_space, order_space, j, h_tilde, e_tilde, gamma0, gamma1, gamma2, gamma3, gamma4)
+gamma = [gamma0, gamma1, gamma2, gamma3, gamma4].';
+i = 1;
+myzero = 1e-6;
+
+% Computing policy operator
+    try
+        X = length(order_space{i,j});
+        H_til = cell(X,1);
+        for x = 1:X
+                H_til{x,1} = h_tilde(:,:,x)*gamma + e_tilde(:,:,x);
+        end
+        
+% Computing likelihood function
+    
+        T = height(estimation_sample{i,j});
+        
+        data_matrix = [estimation_sample{i,j}{:,'stock_morning'} estimation_sample{i,j}{:,'rprice'} estimation_sample{i,j}{:,'lag_weeksales'} estimation_sample{i,j}{:,'weekend'} estimation_sample{i,j}{:,'holiday'} estimation_sample{i,j}{:,'deliveries'}];
+            CCP = zeros(T,1);
+            x = data_matrix(:,6);
+            s = [data_matrix(:,1), data_matrix(:,2), data_matrix(:,3), data_matrix(:,4), data_matrix(:,5)];
+            CCP(:,1) = H_tilde(i,j,x, s, state_space, H_til, order_space);
+            CCP(:,1) = CCP(:,1).*(CCP(:,1)>myzero).*(CCP(:,1)<(1-myzero)) + myzero.*(CCP(:,1)<=myzero) + (1-myzero).*(CCP(:,1)>=(1-myzero));
+            like = sum(log(CCP));
+    catch
+        like = 0;
+    end
+F = like;
+ 
+end
+
+function F = boot(n, B, estimation_sample, state_space, demand_space, inventory_space, order_space, price_transition, inventory_transition, j, h_tilde, e_tilde)
+i = 1;
+gamma_guess = [1 0 0 0 0];
+options = optimset('FunValCheck', 'on', 'MaxIter', 750, 'MaxFunEvals', 1500, 'TolFun', 1.e-6);
+boot_gamma = zeros(B,5);
+data = estimation_sample{i,j};
+boot_data = cell(1,5);
+
+for b = 1:B
+% Sampling with replacement    
+D = datasample(data, n, 'Replace', true);
+boot_data{1,j} = D;
+fonction = @(gamma) -loglike(boot_data, state_space, order_space, j, h_tilde{i,j}, e_tilde{i,j}, gamma(1), gamma(2), gamma(3), gamma(4), gamma(5));
+boot_gamma(b,:) = fminsearchbnd(fonction, gamma_guess, [1 0 0 0 0], [1 Inf Inf Inf Inf], options);
+
+end
+
+F = boot_gamma(:,(2:5));
+
+end
+        
+
+
+    
+
+
+
+
+
+
+
+
